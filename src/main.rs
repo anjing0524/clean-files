@@ -13,9 +13,20 @@ use colored::*;
 use scanner::Scanner;
 use types::CleanTarget;
 use utils::format_size;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Set up Ctrl+C handler for graceful shutdown
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let r = interrupted.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(true, Ordering::SeqCst);
+        eprintln!("\n{}", "⚠️  Interrupt received! Stopping cleanup gracefully...".yellow().bold());
+    })?;
 
     // Print banner
     print_banner();
@@ -54,13 +65,13 @@ fn main() -> Result<()> {
     let results = scanner.scan(&cli.path)?;
 
     // Clean the targets
-    let cleaner = Cleaner::new(cli.dry_run, cli.verbose);
+    let cleaner = Cleaner::new(cli.dry_run, cli.verbose)
+        .with_interrupt_flag(interrupted);
 
     // Override confirmation if --yes flag is set
     let stats = if cli.yes && !cli.dry_run {
-        // Bypass confirmation
         println!("{}", "Skipping confirmation (--yes flag set)".yellow());
-        cleaner.clean(results)?
+        cleaner.clean_without_confirmation(results)?
     } else {
         cleaner.clean(results)?
     };
@@ -101,10 +112,15 @@ fn print_stats(stats: &types::CleanStats, dry_run: bool) {
     println!("  • Total space freed: {}", format_size(stats.total_size).cyan().bold());
     println!("  • Total files removed: {}", stats.total_files.to_string().yellow().bold());
 
-    if !dry_run && stats.failed_dirs > 0 {
+    if !dry_run && (stats.failed_dirs > 0 || stats.skipped_dirs > 0) {
         println!();
-        println!("⚠️  Errors:");
-        println!("  • Failed to delete: {}", stats.failed_dirs.to_string().red().bold());
+        println!("⚠️  Errors & Warnings:");
+        if stats.failed_dirs > 0 {
+            println!("  • Failed to delete: {}", stats.failed_dirs.to_string().red().bold());
+        }
+        if stats.skipped_dirs > 0 {
+            println!("  • Skipped (interrupted): {}", stats.skipped_dirs.to_string().yellow().bold());
+        }
     }
 
     println!();

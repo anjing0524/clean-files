@@ -4,20 +4,98 @@ use crate::utils::format_size;
 use anyhow::Result;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Cleaner {
     dry_run: bool,
     verbose: bool,
+    interrupt_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Cleaner {
     pub fn new(dry_run: bool, verbose: bool) -> Self {
-        Self { dry_run, verbose }
+        Self {
+            dry_run,
+            verbose,
+            interrupt_flag: None,
+        }
+    }
+
+    /// Add an interrupt flag for graceful shutdown on Ctrl+C
+    pub fn with_interrupt_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.interrupt_flag = Some(flag);
+        self
+    }
+
+    /// Check if the operation has been interrupted
+    fn is_interrupted(&self) -> bool {
+        self.interrupt_flag
+            .as_ref()
+            .map_or(false, |flag| flag.load(Ordering::SeqCst))
+    }
+
+    /// Verify directory before deletion to prevent race conditions
+    fn verify_before_delete(&self, result: &ScanResult) -> Result<(), String> {
+        use crate::types::CleanTarget;
+
+        // Check if directory still exists
+        if !result.path.exists() {
+            return Err(format!("Directory no longer exists: {}", result.path.display()));
+        }
+
+        // Check if it's still a directory
+        if !result.path.is_dir() {
+            return Err(format!("Path is no longer a directory: {}", result.path.display()));
+        }
+
+        // Verify marker files based on target type
+        let parent = match result.path.parent() {
+            Some(p) => p,
+            None => return Ok(()), // Root-level directory, skip marker check
+        };
+
+        let verified = match result.target_type {
+            CleanTarget::NodeModules => {
+                // Verify package.json exists for node_modules
+                parent.join("package.json").exists()
+            }
+            CleanTarget::RustTarget => {
+                // Verify Cargo.toml exists for Rust target
+                parent.join("Cargo.toml").exists()
+            }
+            CleanTarget::JavaTarget => {
+                // Verify pom.xml or build.gradle exists for Java targets
+                parent.join("pom.xml").exists()
+                    || parent.join("build.gradle").exists()
+                    || parent.join("build.gradle.kts").exists()
+            }
+            CleanTarget::PythonCache => {
+                // Python cache doesn't require marker file verification
+                true
+            }
+            CleanTarget::All => true,
+        };
+
+        if !verified {
+            return Err(format!(
+                "Marker file verification failed for {}: {}",
+                result.target_type.name(),
+                result.path.display()
+            ));
+        }
+
+        Ok(())
     }
 
     /// Clean the directories found by the scanner
     pub fn clean(&self, results: Vec<ScanResult>) -> Result<CleanStats> {
         self.clean_internal(results, true)
+    }
+
+    /// Clean without confirmation (for --yes flag)
+    pub fn clean_without_confirmation(&self, results: Vec<ScanResult>) -> Result<CleanStats> {
+        self.clean_internal(results, false)
     }
 
     /// Internal clean method with optional confirmation
@@ -38,9 +116,12 @@ impl Cleaner {
             return Ok(stats);
         }
 
-        // Create progress bar
-        let pb = if !self.dry_run && !self.verbose {
-            let pb = ProgressBar::new(results.len() as u64);
+        // Get total count for progress bar
+        let total = results.len();
+
+        // Create progress bar (for both dry-run and real mode if not verbose)
+        let pb = if !self.verbose {
+            let pb = ProgressBar::new(total as u64);
             pb.set_style(
                 ProgressStyle::default_bar()
                     .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
@@ -53,7 +134,23 @@ impl Cleaner {
         };
 
         // Process each result
-        for result in results {
+        for (idx, result) in results.into_iter().enumerate() {
+            // Check for interruption
+            if self.is_interrupted() {
+                // Count remaining directories as skipped
+                let remaining = total - idx;
+                for _ in 0..remaining {
+                    stats.add_skipped();
+                }
+
+                if let Some(ref pb) = pb {
+                    pb.finish_with_message("Interrupted!");
+                }
+
+                println!("\n{}", "⚠️  Cleanup interrupted by user. Remaining directories skipped.".yellow().bold());
+                break;
+            }
+
             if self.dry_run {
                 // In dry-run mode, count everything as it would be deleted
                 stats.add_result(&result);
@@ -66,14 +163,47 @@ impl Cleaner {
                         result.path.display(),
                         format_size(result.size).cyan()
                     );
+                } else if let Some(ref pb) = pb {
+                    let dir_name = result.path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    pb.set_message(format!("Checking: {}", dir_name));
+                    pb.inc(1);
                 }
             } else {
+                // Verify before deletion to prevent race conditions
+                if let Err(e) = self.verify_before_delete(&result) {
+                    stats.add_skipped();
+
+                    if self.verbose {
+                        eprintln!(
+                            "{} Skipped {}: {}",
+                            "⚠️".yellow(),
+                            result.path.display(),
+                            e
+                        );
+                    }
+
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
+
                 if self.verbose {
                     println!(
                         "{} {}",
                         "Deleting:".red(),
                         result.path.display()
                     );
+                }
+
+                // Update progress bar with current directory name
+                if let Some(ref pb) = pb {
+                    let dir_name = result.path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    pb.set_message(format!("Deleting: {}", dir_name));
                 }
 
                 // Only add to stats if deletion succeeds
@@ -88,6 +218,10 @@ impl Cleaner {
                                 format_size(result.size).cyan()
                             );
                         }
+
+                        if let Some(ref pb) = pb {
+                            pb.inc(1);
+                        }
                     }
                     Err(e) => {
                         stats.add_failed();
@@ -98,17 +232,27 @@ impl Cleaner {
                             result.path.display(),
                             e
                         );
-                    }
-                }
 
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
+                        if let Some(ref pb) = pb {
+                            pb.inc(1);
+                        }
+                    }
                 }
             }
         }
 
+        // Finish progress bar with appropriate message
         if let Some(pb) = pb {
-            pb.finish_with_message("Done!");
+            if self.dry_run {
+                pb.finish_with_message("Dry run complete!");
+            } else if stats.failed_dirs > 0 || stats.skipped_dirs > 0 {
+                pb.finish_with_message(format!(
+                    "Done with {} warnings",
+                    stats.failed_dirs + stats.skipped_dirs
+                ));
+            } else {
+                pb.finish_with_message("Successfully completed!");
+            }
         }
 
         Ok(stats)
@@ -203,7 +347,13 @@ mod tests {
     #[test]
     fn test_cleaner_real_deletion() {
         let temp_dir = TempDir::new().unwrap();
-        let test_dir = temp_dir.path().join("to_delete");
+        let project_dir = temp_dir.path().join("myproject");
+        fs::create_dir(&project_dir).unwrap();
+
+        // Create package.json for node_modules verification
+        fs::write(project_dir.join("package.json"), "{}").unwrap();
+
+        let test_dir = project_dir.join("node_modules");
         fs::create_dir(&test_dir).unwrap();
         fs::write(test_dir.join("file1.txt"), "test content 1").unwrap();
         fs::write(test_dir.join("file2.txt"), "test content 2").unwrap();
@@ -237,13 +387,21 @@ mod tests {
         // Test that stats correctly reflect multiple successful deletions
         let temp_dir = TempDir::new().unwrap();
 
-        // Create first directory
-        let dir1 = temp_dir.path().join("dir1");
+        // Create first project with node_modules
+        let project1 = temp_dir.path().join("project1");
+        fs::create_dir(&project1).unwrap();
+        fs::write(project1.join("package.json"), "{}").unwrap();
+
+        let dir1 = project1.join("node_modules");
         fs::create_dir(&dir1).unwrap();
         fs::write(dir1.join("file.txt"), "content1").unwrap();
 
-        // Create second directory
-        let dir2 = temp_dir.path().join("dir2");
+        // Create second project with Rust target
+        let project2 = temp_dir.path().join("project2");
+        fs::create_dir(&project2).unwrap();
+        fs::write(project2.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+
+        let dir2 = project2.join("target");
         fs::create_dir(&dir2).unwrap();
         fs::write(dir2.join("file.txt"), "content2").unwrap();
 
