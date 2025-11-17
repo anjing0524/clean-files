@@ -66,7 +66,8 @@ pub fn remove_dir_all(path: &Path) -> Result<()> {
         }
     }
 
-    fs::remove_dir_all(path).with_context(|| format!("Failed to remove directory: {}", path.display()))
+    fs::remove_dir_all(path)
+        .with_context(|| format!("Failed to remove directory: {}", path.display()))
 }
 
 /// Check if we have permission to delete a directory
@@ -149,4 +150,3 @@ mod tests {
         assert!(!can_delete(&PathBuf::from("/nonexistent/path")));
     }
 }
-

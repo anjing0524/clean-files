@@ -21,14 +21,6 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Check if a directory name should be skipped during scanning
-pub fn should_skip_directory(dir_name: &str) -> bool {
-    matches!(
-        dir_name,
-        ".git" | ".svn" | ".hg" | ".bzr" | ".darcs" | "node_modules" | "target" | "__pycache__" | "build"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,15 +34,5 @@ mod tests {
         assert_eq!(format_size(1536 * 1024), "1.50 MB");
         assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
         assert_eq!(format_size(1024_u64.pow(4)), "1.00 TB");
-    }
-
-    #[test]
-    fn test_should_skip_directory() {
-        assert!(should_skip_directory(".git"));
-        assert!(should_skip_directory("node_modules"));
-        assert!(should_skip_directory("target"));
-        assert!(should_skip_directory("__pycache__"));
-        assert!(!should_skip_directory("src"));
-        assert!(!should_skip_directory("test"));
     }
 }

@@ -4,13 +4,15 @@ use crate::utils::format_size;
 use anyhow::Result;
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub struct Cleaner {
     dry_run: bool,
     verbose: bool,
     interrupt_flag: Option<Arc<AtomicBool>>,
+    parallel: bool,
 }
 
 impl Cleaner {
@@ -19,7 +21,14 @@ impl Cleaner {
             dry_run,
             verbose,
             interrupt_flag: None,
+            parallel: true, // Enable parallel processing by default
         }
+    }
+
+    /// Enable or disable parallel processing
+    pub fn with_parallel(mut self, parallel: bool) -> Self {
+        self.parallel = parallel;
+        self
     }
 
     /// Add an interrupt flag for graceful shutdown on Ctrl+C
@@ -32,21 +41,36 @@ impl Cleaner {
     fn is_interrupted(&self) -> bool {
         self.interrupt_flag
             .as_ref()
-            .map_or(false, |flag| flag.load(Ordering::SeqCst))
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 
     /// Verify directory before deletion to prevent race conditions
     fn verify_before_delete(&self, result: &ScanResult) -> Result<(), String> {
+        use crate::platform::can_delete;
         use crate::types::CleanTarget;
 
         // Check if directory still exists
         if !result.path.exists() {
-            return Err(format!("Directory no longer exists: {}", result.path.display()));
+            return Err(format!(
+                "Directory no longer exists: {}",
+                result.path.display()
+            ));
         }
 
         // Check if it's still a directory
         if !result.path.is_dir() {
-            return Err(format!("Path is no longer a directory: {}", result.path.display()));
+            return Err(format!(
+                "Path is no longer a directory: {}",
+                result.path.display()
+            ));
+        }
+
+        // Check if we have permission to delete
+        if !can_delete(&result.path) {
+            return Err(format!(
+                "Permission denied or directory is read-only: {}",
+                result.path.display()
+            ));
         }
 
         // Verify marker files based on target type
@@ -99,7 +123,11 @@ impl Cleaner {
     }
 
     /// Internal clean method with optional confirmation
-    fn clean_internal(&self, results: Vec<ScanResult>, require_confirmation: bool) -> Result<CleanStats> {
+    fn clean_internal(
+        &self,
+        results: Vec<ScanResult>,
+        require_confirmation: bool,
+    ) -> Result<CleanStats> {
         let mut stats = CleanStats::default();
 
         if results.is_empty() {
@@ -133,7 +161,41 @@ impl Cleaner {
             None
         };
 
-        // Process each result
+        // Process results - use parallel processing if enabled and not in verbose mode
+        if self.parallel && !self.verbose && results.len() > 1 {
+            // Parallel processing for better performance with many directories
+            self.process_parallel(results, &pb, &mut stats)?;
+        } else {
+            // Sequential processing for verbose mode or single directory
+            self.process_sequential(results, &pb, &mut stats)?;
+        }
+
+        // Finish progress bar with appropriate message
+        if let Some(pb) = pb {
+            if self.dry_run {
+                pb.finish_with_message("Dry run complete!");
+            } else if stats.failed_dirs > 0 || stats.skipped_dirs > 0 {
+                pb.finish_with_message(format!(
+                    "Done with {} warnings",
+                    stats.failed_dirs + stats.skipped_dirs
+                ));
+            } else {
+                pb.finish_with_message("Successfully completed!");
+            }
+        }
+
+        Ok(stats)
+    }
+
+    /// Process results sequentially (for verbose mode or when parallel is disabled)
+    fn process_sequential(
+        &self,
+        results: Vec<ScanResult>,
+        pb: &Option<ProgressBar>,
+        stats: &mut CleanStats,
+    ) -> Result<()> {
+        let total = results.len();
+
         for (idx, result) in results.into_iter().enumerate() {
             // Check for interruption
             if self.is_interrupted() {
@@ -147,7 +209,12 @@ impl Cleaner {
                     pb.finish_with_message("Interrupted!");
                 }
 
-                println!("\n{}", "⚠️  Cleanup interrupted by user. Remaining directories skipped.".yellow().bold());
+                println!(
+                    "\n{}",
+                    "⚠️  Cleanup interrupted by user. Remaining directories skipped."
+                        .yellow()
+                        .bold()
+                );
                 break;
             }
 
@@ -164,7 +231,9 @@ impl Cleaner {
                         format_size(result.size).cyan()
                     );
                 } else if let Some(ref pb) = pb {
-                    let dir_name = result.path.file_name()
+                    let dir_name = result
+                        .path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown");
                     pb.set_message(format!("Checking: {}", dir_name));
@@ -176,12 +245,7 @@ impl Cleaner {
                     stats.add_skipped();
 
                     if self.verbose {
-                        eprintln!(
-                            "{} Skipped {}: {}",
-                            "⚠️".yellow(),
-                            result.path.display(),
-                            e
-                        );
+                        eprintln!("{} Skipped {}: {}", "⚠️".yellow(), result.path.display(), e);
                     }
 
                     if let Some(ref pb) = pb {
@@ -191,16 +255,14 @@ impl Cleaner {
                 }
 
                 if self.verbose {
-                    println!(
-                        "{} {}",
-                        "Deleting:".red(),
-                        result.path.display()
-                    );
+                    println!("{} {}", "Deleting:".red(), result.path.display());
                 }
 
                 // Update progress bar with current directory name
                 if let Some(ref pb) = pb {
-                    let dir_name = result.path.file_name()
+                    let dir_name = result
+                        .path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown");
                     pb.set_message(format!("Deleting: {}", dir_name));
@@ -241,21 +303,121 @@ impl Cleaner {
             }
         }
 
-        // Finish progress bar with appropriate message
-        if let Some(pb) = pb {
-            if self.dry_run {
-                pb.finish_with_message("Dry run complete!");
-            } else if stats.failed_dirs > 0 || stats.skipped_dirs > 0 {
-                pb.finish_with_message(format!(
-                    "Done with {} warnings",
-                    stats.failed_dirs + stats.skipped_dirs
-                ));
-            } else {
-                pb.finish_with_message("Successfully completed!");
+        Ok(())
+    }
+
+    /// Process results in parallel for better performance
+    fn process_parallel(
+        &self,
+        results: Vec<ScanResult>,
+        pb: &Option<ProgressBar>,
+        stats: &mut CleanStats,
+    ) -> Result<()> {
+        let stats_mutex = Arc::new(Mutex::new(CleanStats::default()));
+        let pb_arc = pb.as_ref().map(|p| Arc::new(p.clone()));
+        let processed = Arc::new(AtomicUsize::new(0));
+        let total = results.len();
+
+        // Process in parallel using rayon
+        results.par_iter().try_for_each(|result| -> Result<()> {
+            // Check for interruption
+            if self.is_interrupted() {
+                return Ok(());
             }
+
+            if self.dry_run {
+                // In dry-run mode, count everything as it would be deleted
+                let mut stats_guard = stats_mutex.lock().unwrap();
+                stats_guard.add_result(result);
+
+                if let Some(ref pb) = pb_arc {
+                    let dir_name = result
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    pb.set_message(format!("Checking: {}", dir_name));
+                    pb.inc(1);
+                }
+            } else {
+                // Verify before deletion to prevent race conditions
+                if let Err(_e) = self.verify_before_delete(result) {
+                    let mut stats_guard = stats_mutex.lock().unwrap();
+                    stats_guard.add_skipped();
+
+                    if let Some(ref pb) = pb_arc {
+                        pb.inc(1);
+                    }
+                    return Ok(());
+                }
+
+                // Update progress bar with current directory name
+                if let Some(ref pb) = pb_arc {
+                    let dir_name = result
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    pb.set_message(format!("Deleting: {}", dir_name));
+                }
+
+                // Only add to stats if deletion succeeds
+                match remove_dir_all(&result.path) {
+                    Ok(_) => {
+                        let mut stats_guard = stats_mutex.lock().unwrap();
+                        stats_guard.add_result(result);
+
+                        if let Some(ref pb) = pb_arc {
+                            pb.inc(1);
+                        }
+                    }
+                    Err(e) => {
+                        let mut stats_guard = stats_mutex.lock().unwrap();
+                        stats_guard.add_failed();
+
+                        eprintln!(
+                            "{} Failed to delete {}: {}",
+                            "✗".red(),
+                            result.path.display(),
+                            e
+                        );
+
+                        if let Some(ref pb) = pb_arc {
+                            pb.inc(1);
+                        }
+                    }
+                }
+            }
+
+            processed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })?;
+
+        // Count skipped directories if interrupted
+        let processed_count = processed.load(Ordering::SeqCst);
+        if processed_count < total {
+            let mut stats_guard = stats_mutex.lock().unwrap();
+            for _ in 0..(total - processed_count) {
+                stats_guard.add_skipped();
+            }
+
+            if let Some(ref pb) = pb {
+                pb.finish_with_message("Interrupted!");
+            }
+
+            println!(
+                "\n{}",
+                "⚠️  Cleanup interrupted by user. Remaining directories skipped."
+                    .yellow()
+                    .bold()
+            );
         }
 
-        Ok(stats)
+        // Merge parallel stats back into main stats
+        let final_stats = Arc::try_unwrap(stats_mutex).unwrap().into_inner().unwrap();
+        *stats = final_stats;
+
+        Ok(())
     }
 
     /// Print a summary of what will be cleaned
@@ -271,7 +433,10 @@ impl Cleaner {
         let total_size: u64 = results.iter().map(|r| r.size).sum();
         let total_files: usize = results.iter().map(|r| r.file_count).sum();
 
-        println!("Found {} directories to clean:", results.len().to_string().green().bold());
+        println!(
+            "Found {} directories to clean:",
+            results.len().to_string().green().bold()
+        );
         println!("Total size: {}", format_size(total_size).cyan().bold());
         println!("Total files: {}", total_files.to_string().yellow().bold());
         println!();
@@ -414,7 +579,9 @@ mod tests {
         result2.file_count = 1;
 
         let cleaner = Cleaner::new(false, false);
-        let stats = cleaner.clean_internal(vec![result1, result2], false).unwrap();
+        let stats = cleaner
+            .clean_internal(vec![result1, result2], false)
+            .unwrap();
 
         // Both deletions should be counted
         assert_eq!(stats.total_dirs, 2, "Should count all successful deletions");
