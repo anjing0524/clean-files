@@ -7,6 +7,7 @@ use walkdir::WalkDir;
 pub struct Scanner {
     target: CleanTarget,
     max_depth: Option<usize>,
+    verbose: bool,
 }
 
 impl Scanner {
@@ -14,11 +15,17 @@ impl Scanner {
         Self {
             target,
             max_depth: None,
+            verbose: false,
         }
     }
 
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = Some(depth);
+        self
+    }
+
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
         self
     }
 
@@ -37,7 +44,13 @@ impl Scanner {
         for entry in walker.into_iter().filter_entry(|e| self.should_enter(e)) {
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => continue, // Skip inaccessible directories
+                Err(e) => {
+                    // Log permission errors or other access issues
+                    if self.verbose {
+                        eprintln!("⚠️  Skipped (access error): {}", e);
+                    }
+                    continue;
+                }
             };
 
             if !entry.file_type().is_dir() {

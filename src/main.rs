@@ -47,6 +47,9 @@ fn main() -> Result<()> {
     if let Some(depth) = cli.max_depth {
         scanner = scanner.with_max_depth(depth);
     }
+    if cli.verbose {
+        scanner = scanner.with_verbose(true);
+    }
 
     let results = scanner.scan(&cli.path)?;
 
@@ -94,9 +97,16 @@ fn print_stats(stats: &types::CleanStats, dry_run: bool) {
     }
 
     println!("📊 Statistics:");
-    println!("  • Total directories: {}", stats.total_dirs.to_string().green().bold());
+    println!("  • Total directories cleaned: {}", stats.total_dirs.to_string().green().bold());
     println!("  • Total space freed: {}", format_size(stats.total_size).cyan().bold());
-    println!("  • Total files: {}", stats.total_files.to_string().yellow().bold());
+    println!("  • Total files removed: {}", stats.total_files.to_string().yellow().bold());
+
+    if !dry_run && stats.failed_dirs > 0 {
+        println!();
+        println!("⚠️  Errors:");
+        println!("  • Failed to delete: {}", stats.failed_dirs.to_string().red().bold());
+    }
+
     println!();
 
     println!("🗂️  Breakdown by type:");

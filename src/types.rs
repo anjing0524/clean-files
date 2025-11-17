@@ -65,6 +65,8 @@ pub struct CleanStats {
     pub rust_targets: usize,
     pub python_caches: usize,
     pub java_targets: usize,
+    pub failed_dirs: usize,
+    pub skipped_dirs: usize,
 }
 
 impl CleanStats {
@@ -80,6 +82,14 @@ impl CleanStats {
             CleanTarget::JavaTarget => self.java_targets += 1,
             CleanTarget::All => {}
         }
+    }
+
+    pub fn add_failed(&mut self) {
+        self.failed_dirs += 1;
+    }
+
+    pub fn add_skipped(&mut self) {
+        self.skipped_dirs += 1;
     }
 }
 
