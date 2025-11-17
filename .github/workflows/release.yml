@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build for ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64 (glibc)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: clean-files
+            archive: tar.gz
+
+          - name: Linux x86_64 (musl)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            bin: clean-files
+            archive: tar.gz
+
+          - name: Linux ARM64 (glibc)
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            bin: clean-files
+            archive: tar.gz
+
+          - name: Linux ARM64 (musl)
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            bin: clean-files
+            archive: tar.gz
+
+          - name: macOS x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bin: clean-files
+            archive: tar.gz
+
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bin: clean-files
+            archive: tar.gz
+
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: clean-files.exe
+            archive: zip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Install cross-compilation tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [ "${{ matrix.platform.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          elif [ "${{ matrix.platform.target }}" = "aarch64-unknown-linux-musl" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+          fi
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Run tests
+        if: matrix.platform.target == 'x86_64-unknown-linux-gnu' || matrix.platform.target == 'x86_64-pc-windows-msvc' || matrix.platform.target == 'x86_64-apple-darwin'
+        run: cargo test --target ${{ matrix.platform.target }}
+
+      - name: Package (Unix)
+        if: matrix.platform.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.platform.target }}/release
+          tar czf ../../../clean-files-${{ matrix.platform.target }}.tar.gz ${{ matrix.platform.bin }}
+          cd -
+
+      - name: Package (Windows)
+        if: matrix.platform.archive == 'zip'
+        run: |
+          cd target/${{ matrix.platform.target }}/release
+          7z a ../../../clean-files-${{ matrix.platform.target }}.zip ${{ matrix.platform.bin }}
+          cd -
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-files-${{ matrix.platform.target }}
+          path: clean-files-${{ matrix.platform.target }}.${{ matrix.platform.archive }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -118,9 +118,13 @@ fn test_integration_full_scan() {
     create_test_structure(temp_dir.path());
 
     // Verify all directories exist
-    assert!(dir_exists(&temp_dir.path().join("node-project/node_modules")));
+    assert!(dir_exists(
+        &temp_dir.path().join("node-project/node_modules")
+    ));
     assert!(dir_exists(&temp_dir.path().join("rust-project/target")));
-    assert!(dir_exists(&temp_dir.path().join("python-project/__pycache__")));
+    assert!(dir_exists(
+        &temp_dir.path().join("python-project/__pycache__")
+    ));
     assert!(dir_exists(&temp_dir.path().join("java-project/target")));
     assert!(dir_exists(&temp_dir.path().join("gradle-project/build")));
 }

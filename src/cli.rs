@@ -31,6 +31,10 @@ pub struct Cli {
     /// Skip confirmation prompt (use with caution!)
     #[arg(short = 'y', long)]
     pub yes: bool,
+
+    /// Use parallel processing for faster deletion (default: enabled)
+    #[arg(short = 'j', long = "parallel", default_value = "true")]
+    pub parallel: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -69,18 +73,12 @@ mod tests {
             CleanTarget::from(TargetType::Node),
             CleanTarget::NodeModules
         );
-        assert_eq!(
-            CleanTarget::from(TargetType::Rust),
-            CleanTarget::RustTarget
-        );
+        assert_eq!(CleanTarget::from(TargetType::Rust), CleanTarget::RustTarget);
         assert_eq!(
             CleanTarget::from(TargetType::Python),
             CleanTarget::PythonCache
         );
-        assert_eq!(
-            CleanTarget::from(TargetType::Java),
-            CleanTarget::JavaTarget
-        );
+        assert_eq!(CleanTarget::from(TargetType::Java), CleanTarget::JavaTarget);
         assert_eq!(CleanTarget::from(TargetType::All), CleanTarget::All);
     }
 }

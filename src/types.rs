@@ -11,6 +11,9 @@ pub enum CleanTarget {
 }
 
 impl CleanTarget {
+    /// Returns all available clean target types (excluding All)
+    /// This is useful for programmatic iteration and testing
+    #[allow(dead_code)]
     pub fn all_targets() -> Vec<CleanTarget> {
         vec![
             CleanTarget::NodeModules,

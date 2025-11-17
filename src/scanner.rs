@@ -91,7 +91,10 @@ impl Scanner {
         let dir_name = entry.file_name().to_string_lossy();
 
         // Don't enter version control directories
-        if matches!(dir_name.as_ref(), ".git" | ".svn" | ".hg" | ".bzr" | ".darcs") {
+        if matches!(
+            dir_name.as_ref(),
+            ".git" | ".svn" | ".hg" | ".bzr" | ".darcs"
+        ) {
             return false;
         }
 
@@ -103,8 +106,13 @@ impl Scanner {
                 // Don't descend into contents of target directories
                 if matches!(
                     parent_name.as_ref(),
-                    "node_modules" | "target" | "__pycache__" | "build" |
-                    ".pytest_cache" | ".tox" | ".mypy_cache"
+                    "node_modules"
+                        | "target"
+                        | "__pycache__"
+                        | "build"
+                        | ".pytest_cache"
+                        | ".tox"
+                        | ".mypy_cache"
                 ) {
                     return false;
                 }

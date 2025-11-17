@@ -1,0 +1,40 @@
+# Cargo configuration for cross-compilation
+
+[build]
+# Optimize for size and performance
+incremental = true
+
+[target.x86_64-unknown-linux-gnu]
+linker = "cc"
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
+[target.x86_64-apple-darwin]
+linker = "cc"
+
+[target.aarch64-apple-darwin]
+linker = "cc"
+
+# Profile configurations
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
