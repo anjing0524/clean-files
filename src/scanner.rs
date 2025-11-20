@@ -3,6 +3,7 @@ use crate::types::{CleanTarget, ScanResult};
 use anyhow::Result;
 use std::path::Path;
 use walkdir::WalkDir;
+use rayon::prelude::*;
 
 pub struct Scanner {
     target: CleanTarget,
@@ -41,6 +42,7 @@ impl Scanner {
 
         walker = walker.min_depth(1);
 
+        // First pass: Collect all targets (sequential discovery)
         for entry in walker.into_iter().filter_entry(|e| self.should_enter(e)) {
             let entry = match entry {
                 Ok(e) => e,
@@ -66,18 +68,19 @@ impl Scanner {
             // Check if this directory matches any of our targets
             if let Some(target_type) = self.identify_target(&dir_name, path) {
                 if self.target.should_clean(&target_type) {
-                    let mut result = ScanResult::new(path.to_path_buf(), target_type);
-
-                    // Calculate size and file count
-                    if let Ok((size, count)) = calculate_dir_size(path) {
-                        result.size = size;
-                        result.file_count = count;
-                    }
-
-                    results.push(result);
+                    results.push(ScanResult::new(path.to_path_buf(), target_type));
                 }
             }
         }
+
+        // Second pass: Calculate sizes in parallel
+        // This is the most expensive part, so we parallelize it
+        results.par_iter_mut().for_each(|result| {
+            if let Ok((size, count)) = calculate_dir_size(&result.path) {
+                result.size = size;
+                result.file_count = count;
+            }
+        });
 
         Ok(results)
     }
