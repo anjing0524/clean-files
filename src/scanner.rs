@@ -1,9 +1,9 @@
 use crate::platform::calculate_dir_size;
 use crate::types::{CleanTarget, ScanResult};
 use anyhow::Result;
+use rayon::prelude::*;
 use std::path::Path;
 use walkdir::WalkDir;
-use rayon::prelude::*;
 
 pub struct Scanner {
     target: CleanTarget,
