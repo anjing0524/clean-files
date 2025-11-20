@@ -348,6 +348,7 @@ impl Cleaner {
                     if let Some(ref pb) = pb_arc {
                         pb.inc(1);
                     }
+                    processed.fetch_add(1, Ordering::SeqCst);
                     return Ok(());
                 }
 

@@ -135,8 +135,7 @@ impl Scanner {
                         return Some(CleanTarget::NodeModules);
                     }
                 }
-                // Also accept it if it looks like node_modules
-                Some(CleanTarget::NodeModules)
+                None
             }
             "target" => {
                 // Check if it's a Rust target (has Cargo.toml in parent)
