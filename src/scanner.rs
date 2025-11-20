@@ -9,6 +9,7 @@ pub struct Scanner {
     target: CleanTarget,
     max_depth: Option<usize>,
     verbose: bool,
+    self_exe_path: Option<std::path::PathBuf>,
 }
 
 impl Scanner {
@@ -17,6 +18,7 @@ impl Scanner {
             target,
             max_depth: None,
             verbose: false,
+            self_exe_path: std::env::current_exe().ok(),
         }
     }
 
@@ -33,11 +35,12 @@ impl Scanner {
     /// Scan a directory for cleanable targets
     pub fn scan(&self, root: &Path) -> Result<Vec<ScanResult>> {
         let mut results = Vec::new();
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
         let mut walker = if let Some(depth) = self.max_depth {
-            WalkDir::new(root).max_depth(depth)
+            WalkDir::new(&root).max_depth(depth)
         } else {
-            WalkDir::new(root)
+            WalkDir::new(&root)
         };
 
         walker = walker.min_depth(1);
@@ -67,6 +70,16 @@ impl Scanner {
 
             // Check if this directory matches any of our targets
             if let Some(target_type) = self.identify_target(&dir_name, path) {
+                // Check if we are trying to delete ourselves
+                if let Some(exe_path) = &self.self_exe_path {
+                    if exe_path.starts_with(path) {
+                        if self.verbose {
+                            eprintln!("⚠️  Skipping own build directory: {}", path.display());
+                        }
+                        continue;
+                    }
+                }
+
                 if self.target.should_clean(&target_type) {
                     results.push(ScanResult::new(path.to_path_buf(), target_type));
                 }
